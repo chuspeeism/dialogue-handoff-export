@@ -1,0 +1,4 @@
+interface:
+  display_name: "对话交接器"
+  short_description: "导出当前或指定 Codex 对话为接力包与聊天回放页面"
+  default_prompt: "Use $dialogue-handoff-export to export the current Codex conversation as a handoff package."

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# local backup of pre-refactor script
+.codex_context_exporter.py.bak.*
+
+# default export output dir
+exports/
