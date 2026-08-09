@@ -1,90 +1,46 @@
 # dialogue-handoff-export
 
-把单条 AI 对话导出成"可分享 / 可接力"的交接包。当前支持 **Codex** 和 **Claude Code** 两种来源。
+把单条 AI 对话导出成「可分享 / 可接力」的交接包。支持 **Codex**、**Claude Code**、**OpenClaw**、**Hermes** 四个本地来源。
 
-每次导出会落 4 个文件到 `exports/<日期>_<来源>_<标题>_<id>_<mode>/`:
+## 这个仓库现在只剩一张说明书
 
-- `conversation.html` — 单文件聊天回放页(给人看)
-- `ai-handoff.md` — 给另一个 AI 粘贴接着聊用的 markdown
-- `conversation.md` — 纯文本通读
-- `conversation.raw.json` — 结构化原档
+导出引擎已合入 **context-hub**（`hub/cli.py`）。原因是两边内核本来就同源：本仓库的 `scripts/sources/` 与 context-hub 的 `hub/connectors/` 解决同一个问题，但各自演化后差异超过 87%，等于维护两套。合并后：
+
+- **内核归 context-hub**：它支持 4 个本地源（本仓库原先只有 2 个）、图片提取、接力包 token 预算压缩、敏感信息扫描
+- **本仓库归 skill 契约**：`SKILL.md` 描述何时触发、怎么调用，不再有第二份实现
+
+反过来，本仓库原先独有、context-hub 缺失的两块能力也已经补进产品：**单文件 HTML 回放页**（图片内嵌成 data URI，能直接寄出去）和 **share / with-tools / raw-archive 三档模式**。
+
+产品与 skill 解决的不是同一个问题，所以形态没有合并：context-hub 的 Web UI 服务「人在浏览器里翻对话库」，本 skill 服务「正在会话里干活的 AI agent」——它没有浏览器，只知道当前这条对话，要的是落到磁盘的文件。CLI 就是产品为后者长出的第二个前端。
 
 ## 安装
-
-把整个仓库克隆到 Codex 的 skill 目录:
 
 ```bash
 git clone https://github.com/chuspeeism/dialogue-handoff-export.git ~/.codex/skills/dialogue-handoff-export
 ```
 
-也可以放任意位置,直接调用 `scripts/exporter.py`。脚本只用标准库,无需 pip install。
+前置依赖：本机装有 context-hub 并至少启动过一次（启动时会把自身路径写到 `~/.context-hub/home`，skill 据此定位）。也可以自己设 `CONTEXT_HUB_HOME`。
 
 ## 使用
 
-### 导出当前对话(自动识别)
-
 ```bash
-python3 ~/.codex/skills/dialogue-handoff-export/scripts/exporter.py export-current --output ./exports
+HUB="${CONTEXT_HUB_HOME:-$(cat ~/.context-hub/home)}"
+
+# 当前对话（自动识别 Codex / Claude Code）
+(cd "$HUB" && python3 -m hub.cli export-current --output "$OLDPWD/exports")
+
+# 指定会话
+(cd "$HUB" && python3 -m hub.cli export --session-id <uuid> --output "$OLDPWD/exports")
+(cd "$HUB" && python3 -m hub.cli export --thread-id <uuid> --output "$OLDPWD/exports")
 ```
 
-在 Codex 里读 `CODEX_THREAD_ID`,在 Claude Code 里读 `CLAUDE_CODE_SESSION_ID`。
+不需要启动 Hub 服务，CLI 直接读源文件。完整参数见 `SKILL.md` 或 `python3 -m hub.cli export --help`。
 
-### 通过会话 id 导出
+## 输出
 
-```bash
-# Codex thread id
-python3 .../scripts/exporter.py export --thread-id <uuid> --output ./exports
+`exports/<日期>_<来源>_<标题>_<id前8位>_<模式>/`
 
-# Claude Code session id
-python3 .../scripts/exporter.py export --session-id <uuid> --output ./exports
-```
-
-### 通过原始 JSONL 文件导出
-
-```bash
-python3 .../scripts/exporter.py export --rollout /path/to/rollout.jsonl --source codex
-python3 .../scripts/exporter.py export --rollout ~/.claude/projects/<slug>/<uuid>.jsonl --source claude-code
-```
-
-### 导出模式
-
-- `--mode share`(默认):剥掉 developer 消息、环境上下文、原始事件、工具输出,适合分享给别人或别的 AI
-- `--mode with-tools`:包含工具调用和截断后的工具输出,用于讨论执行细节
-- `--mode raw-archive`:本地完整归档,会带 developer instructions 和完整工具输出,慎用
-
-## 架构
-
-```
-scripts/
-├── exporter.py                  统一入口
-├── codex_context_exporter.py    向后兼容 shim,转发到 exporter.py --source codex
-├── render/                      渲染层(HTML / markdown / handoff 模板)
-│   ├── conversation.py
-│   ├── html.py
-│   └── markdown.py
-└── sources/                     数据源插件
-    ├── base.py                  Source 接口 + canonical event schema
-    ├── codex.py                 ~/.codex/state_*.sqlite + sessions/*.jsonl
-    └── claude_code.py           ~/.claude/projects/<slug>/<uuid>.jsonl
-```
-
-### 数据源对比
-
-| 维度 | Codex | Claude Code |
-|---|---|---|
-| 当前会话 env | `CODEX_THREAD_ID` | `CLAUDE_CODE_SESSION_ID` |
-| 索引 | `~/.codex/state_*.sqlite` | 无中心 DB,扫 `~/.claude/projects/*` |
-| 事件结构 | `response_item` 套 message / function_call / function_call_output | 顶层 `user` / `assistant`,assistant 的 `message.content` 内嵌 `text` 与 `tool_use` 块,工具结果以 `user` 消息回传 |
-| 标题 | `threads.title` | `ai-title` 事件的 `aiTitle` |
-
-### 加新数据源
-
-在 `sources/` 加一个文件实现 `Source` 接口(`find_current` / `find_by_id` / `find_by_rollout` / `iter_canonical_events`),在 `sources/__init__.py` 注册一行,完事。渲染层不用动。
-
-## 向后兼容
-
-仓库前身是只支持 Codex 的 `codex_context_exporter.py`。该文件保留为 23 行 shim,自动注入 `--source codex` 后转发,旧调用不受影响。
-
-## 相关
-
-- HTML 顶部"复制接力包"按钮把 `ai-handoff.md` 内容写入剪贴板,可直接粘贴到下一个 AI;"复制会话 ID"用于二次导出。注意 `file://` 模式下部分浏览器禁止写剪贴板,如不响应请用 `python3 -m http.server` 起本地服务再访问。
+- `conversation.html` — 单文件聊天回放页（给人看，图片内嵌）
+- `ai-handoff.md` — 给另一个 AI 粘贴接着聊
+- `conversation.md` — 纯文本通读
+- `conversation.raw.json` — 结构化原档

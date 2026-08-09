@@ -7,107 +7,62 @@ description: Export a single explicitly targeted AI conversation (Codex or Claud
 
 Export exactly one conversation that the user explicitly targets. Do not list recent conversations, search historical conversations, or batch-export a project.
 
-## Supported sources
+This skill is a thin caller. The export engine lives in **context-hub** (`hub/cli.py`), which shares its connectors, handoff format, and secret scanner with the Context Hub app. There is no separate implementation here to maintain.
 
-- **Codex** — reads `~/.codex/state_*.sqlite` + `~/.codex/sessions/**/rollout-*.jsonl`. Identified by env `CODEX_THREAD_ID`.
-- **Claude Code** — reads `~/.claude/projects/<cwd-slug>/<session-uuid>.jsonl`. Identified by env `CLAUDE_CODE_SESSION_ID`.
-
-Valid inputs:
-
-1. Current conversation window (whichever AI runtime is invoking the script).
-2. A Codex thread id supplied by the user.
-3. A Claude Code session id (UUID) supplied by the user.
-4. A rollout/session `*.jsonl` path supplied by the user.
-
-## Quick Start
-
-Resolve `scripts/exporter.py` relative to this `SKILL.md`, then run it from the user's current workspace so the `exports/` folder lands near the user's work.
-
-Default command for the current conversation (auto-detects Codex vs Claude Code):
+## Step 1 — locate context-hub
 
 ```bash
-python3 /path/to/dialogue-handoff-export/scripts/exporter.py export-current --output ./exports
+HUB="${CONTEXT_HUB_HOME:-$(cat ~/.context-hub/home 2>/dev/null)}"
+[ -d "$HUB" ] && echo "$HUB" || echo "NOT FOUND"
 ```
 
-The command writes:
+`~/.context-hub/home` is rewritten every time the Hub launches, so it tracks the folder even if it moves. If it prints `NOT FOUND`, tell the user context-hub is not installed or has never been launched, and ask for its path — do not guess and do not reimplement the exporter.
 
-- `conversation.html` — single-file chat replay page for human collaborators.
-- `ai-handoff.md` — markdown package to paste into Gemini, Claude, ChatGPT, or Codex.
-- `conversation.md` — readable markdown transcript.
-- `conversation.raw.json` — structured archive for later conversion.
+## Step 2 — export
 
-## Routing
+Run from the user's current workspace so `exports/` lands near their work.
 
-Decide source by user signal, not by guessing:
+Current conversation (auto-detects Codex vs Claude Code from `CODEX_THREAD_ID` / `CLAUDE_CODE_SESSION_ID`):
 
-1. User says “当前对话”, “这个对话”, “现在这条”, or invokes the skill from a chat → `export-current`. Source auto-detects from environment (`CLAUDE_CODE_SESSION_ID` / `CLAUDECODE` → claude-code; `CODEX_THREAD_ID` → codex).
-2. User provides a Codex thread id → `export --thread-id <id>` (auto-resolves to `--source codex`).
-3. User provides a Claude Code session UUID → `export --session-id <uuid>` (auto-resolves to `--source claude-code`).
-4. User provides a JSONL path → `export --rollout <path> --source codex|claude-code`. If the path is under `~/.codex/sessions/` use `codex`; if under `~/.claude/projects/` use `claude-code`.
+```bash
+(cd "$HUB" && python3 -m hub.cli export-current --output "$OLDPWD/exports")
+```
 
-If auto-detection cannot decide, ask the user which source.
+A specific conversation:
+
+```bash
+(cd "$HUB" && python3 -m hub.cli export --session-id <uuid> --output "$OLDPWD/exports")   # Claude Code
+(cd "$HUB" && python3 -m hub.cli export --thread-id <uuid> --output "$OLDPWD/exports")    # Codex
+(cd "$HUB" && python3 -m hub.cli export --conv-id <id> --output "$OLDPWD/exports")        # any local source
+(cd "$HUB" && python3 -m hub.cli export --file <path.jsonl> --source codex --output "$OLDPWD/exports")
+```
+
+The CLI reads the source files directly — the Hub server does not need to be running.
+
+## Output
+
+One folder per export, `exports/<date>_<source>_<title>_<id8>_<mode>/`:
+
+- `conversation.html` — single-file replay for people; images inlined as data URIs, so it survives being emailed
+- `ai-handoff.md` — paste into the next AI
+- `conversation.md` — plain transcript
+- `conversation.raw.json` — structured archive
 
 ## Modes
 
-- `--mode share` (default) — strips developer messages, environment context, raw events, and tool outputs. Safe to send to another AI.
-- `--mode with-tools` — include tool calls and truncated tool outputs. Use when the user asks for tool/execution detail.
-- `--mode raw-archive` — full archive for local debugging. Warn the user that this may contain developer instructions, environment context, and full tool output.
+| `--mode` | Contents |
+|---|---|
+| `share` (default) | Prose only — no tool calls, no thinking. Safe to hand to a collaborator. |
+| `with-tools` | Adds tool calls and thinking as fold-outs. For discussing execution detail. |
+| `raw-archive` | `with-tools` plus image payloads in the JSON and a copy of the original JSONL. Local archive; may contain harness instructions and full tool output. |
 
-## Commands
+## Options worth knowing
 
-Current conversation, auto-detect source:
+- `--target chatgpt|claude|gemini|豆包|千问|deepseek|kimi|元宝` — compress the handoff package to that platform's single-paste budget (early turns fold to summaries, recent turns stay verbatim). `--full` disables it.
+- `--no-redact` — skip the secret scan. It is **on by default**: API keys, tokens, private keys, and connection strings in the handoff package are masked before writing.
+- `python3 -m hub.cli list --source claude-code --limit 10` — find a conversation id. Use only when the user hands you an ambiguous target; this skill does not browse history on its own.
 
-```bash
-python3 /path/to/dialogue-handoff-export/scripts/exporter.py export-current --output ./exports
-```
+## Routing
 
-Force a specific source for the current window:
-
-```bash
-python3 /path/to/dialogue-handoff-export/scripts/exporter.py export-current --source claude-code --output ./exports
-```
-
-Specific Codex thread id:
-
-```bash
-python3 /path/to/dialogue-handoff-export/scripts/exporter.py export --thread-id 019e6224-6a78-73f1-b1d4-7757cfc73c39 --output ./exports
-```
-
-Specific Claude Code session id:
-
-```bash
-python3 /path/to/dialogue-handoff-export/scripts/exporter.py export --session-id a1709565-2d83-475d-af0d-0ee623dbb5e3 --output ./exports
-```
-
-Specific rollout file:
-
-```bash
-python3 /path/to/dialogue-handoff-export/scripts/exporter.py export --rollout /path/to/rollout.jsonl --source codex --output ./exports
-python3 /path/to/dialogue-handoff-export/scripts/exporter.py export --rollout ~/.claude/projects/<slug>/<uuid>.jsonl --source claude-code --output ./exports
-```
-
-Include tool summaries:
-
-```bash
-python3 /path/to/dialogue-handoff-export/scripts/exporter.py export-current --mode with-tools --output ./exports
-```
-
-Local full archive (warn the user):
-
-```bash
-python3 /path/to/dialogue-handoff-export/scripts/exporter.py export-current --mode raw-archive --output ./exports
-```
-
-## Backward compatibility
-
-The original `scripts/codex_context_exporter.py` is kept as a thin shim. It forwards all arguments to `exporter.py` with `--source codex` injected, so existing skill consumers and any pinned paths keep working without changes.
-
-## Implementation Notes
-
-- Codex: `find_current` reads `CODEX_THREAD_ID`; thread metadata comes from `state_*.sqlite`, then falls back to globbing `sessions/**/*<id>*.jsonl`.
-- Claude Code: `find_current` reads `CLAUDE_CODE_SESSION_ID`; sessions are located by scanning `~/.claude/projects/*/`. Metadata (title, cwd, timestamps) is derived from the JSONL itself: `ai-title` events, the first non-reminder user message, and per-event `cwd`.
-- Claude Code filters injected harness blocks: messages that are entirely `<system-reminder>...</system-reminder>` are dropped; trailing reminders on real user messages are stripped; slash-command envelopes (`<command-name>`, `<command-message>`, `<local-command-stdout>`) are removed before rendering.
-- Tool call pairing in Claude Code: assistant messages emit both `text` and `tool_use` blocks in one event — these are split into separate canonical records. Tool results come back as user messages with `content[].type == "tool_result"` and are paired by `tool_use_id`.
-- The default `share` mode excludes developer messages, environment context, raw events, and tool outputs.
-- The script is standard-library Python only.
-- If `export-current` fails because no session id is in the environment, ask the user for a thread id / session id / rollout file path.
+- User wants **one conversation exported to files** → this skill.
+- User wants to **browse, search, or combine several conversations** → that is the Context Hub app (`python3 app.py` in `$HUB`, then `http://localhost:8765`), not this skill.
